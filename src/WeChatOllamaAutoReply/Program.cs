@@ -39,8 +39,14 @@ public static class Program
 
             if (options.CheckOnly)
             {
-                var textBlockCount = await wechat.CheckAsync(cancellation.Token);
-                Console.WriteLine($"自检完成：Ollama、OCR 和微信截图均可用（识别到 {textBlockCount} 个文本块）；未监听、未发送。");
+                var check = await wechat.CheckAsync(cancellation.Token);
+                var unread = await wechat.DetectUnreadSessionsAsync(cancellation.Token);
+                var badgeText = check.BadgeCandidates.Count == 0
+                    ? "无"
+                    : string.Join(", ", check.BadgeCandidates.Select(point => $"({point.X},{point.Y})"));
+                Console.WriteLine(
+                    $"自检完成：窗口 {check.WindowSize.Width}x{check.WindowSize.Height}，" +
+                    $"OCR {check.TextBlockCount} 个文本块，红点候选 {badgeText}，映射未读 {unread.Count} 项；未监听、未发送。");
                 return 0;
             }
 

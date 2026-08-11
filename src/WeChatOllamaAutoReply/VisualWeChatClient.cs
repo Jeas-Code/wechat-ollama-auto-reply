@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Definitions;
@@ -14,8 +16,10 @@ namespace WeChatOllamaAutoReply;
 
 public sealed record UnreadSession(string Contact, string Preview, int RowY)
 {
-    public string Key => $"{VisualMessagePolicy.Normalize(Contact)}|{VisualMessagePolicy.Normalize(Preview)}";
+    public string Key => VisualMessagePolicy.ContactKey(Contact);
 }
+
+public sealed record VisualCheckResult(Size WindowSize, int TextBlockCount, IReadOnlyList<Point> BadgeCandidates);
 
 public sealed class VisualWeChatClient : IDisposable
 {
@@ -44,14 +48,39 @@ public sealed class VisualWeChatClient : IDisposable
         await ocr.InitModels();
         cancellationToken.ThrowIfCancellationRequested();
 
-        var processIds = Process.GetProcessesByName("Weixin").Select(process => process.Id).ToHashSet();
+        var processes = Process.GetProcessesByName("Weixin");
+        var processIds = processes.Select(process => process.Id).ToHashSet();
         var automation = new UIA3Automation();
-        var candidates = automation.GetDesktop()
-            .FindAllChildren(condition => condition.ByControlType(ControlType.Window))
-            .Where(element => processIds.Contains(element.Properties.ProcessId.Value))
-            .Where(element => element.BoundingRectangle.Width >= 600 && element.BoundingRectangle.Height >= 450)
-            .Select(element => element.AsWindow())
-            .OrderByDescending(window => window.BoundingRectangle.Width * window.BoundingRectangle.Height)
+        var handles = FindVisibleTopLevelWindows(processIds);
+        if (handles.Count == 0)
+        {
+            var restorableHandle = FindRestorableTopLevelWindow(processIds);
+            if (restorableHandle != IntPtr.Zero)
+            {
+                ShowWindow(restorableHandle, ShowWindowCommand.Restore);
+                SetForegroundWindow(restorableHandle);
+                await Task.Delay(800, cancellationToken);
+                handles = FindVisibleTopLevelWindows(processIds);
+            }
+        }
+
+        if (handles.Count == 0)
+        {
+            Keyboard.TypeSimultaneously(
+                VirtualKeyShort.CONTROL,
+                VirtualKeyShort.ALT,
+                VirtualKeyShort.KEY_W);
+            await Task.Delay(800, cancellationToken);
+            handles = FindVisibleTopLevelWindows(processIds);
+        }
+
+        var candidates = handles
+            .Select(handle => automation.FromHandle(handle).AsWindow())
+            .OrderByDescending(window =>
+            {
+                var bounds = GetNativeBounds(window.Properties.NativeWindowHandle.Value);
+                return bounds.Width * bounds.Height;
+            })
             .ToArray();
 
         if (candidates.Length == 0)
@@ -72,13 +101,23 @@ public sealed class VisualWeChatClient : IDisposable
         return new VisualWeChatClient(automation, candidates[0], ocr);
     }
 
-    public async Task<int> CheckAsync(CancellationToken cancellationToken)
+    public async Task<VisualCheckResult> CheckAsync(CancellationToken cancellationToken)
     {
         using var bitmap = Capture();
+        var debugCapturePath = Environment.GetEnvironmentVariable("AICHAT_DEBUG_CAPTURE");
+        if (!string.IsNullOrWhiteSpace(debugCapturePath))
+        {
+            bitmap.Save(Path.GetFullPath(debugCapturePath));
+        }
+        var layout = GetLayout(bitmap.Size);
+        var badges = RedBadgeDetector.Find(bitmap, layout.BadgeSearchArea);
         var result = await DetectAsync(bitmap, cancellationToken);
         try
         {
-            return result.TextBlocks.Count(block => !string.IsNullOrWhiteSpace(block.Text));
+            return new VisualCheckResult(
+                bitmap.Size,
+                result.TextBlocks.Count(block => !string.IsNullOrWhiteSpace(block.Text)),
+                badges);
         }
         finally
         {
@@ -126,6 +165,12 @@ public sealed class VisualWeChatClient : IDisposable
             }
 
             var contact = rowBlocks[0].Text;
+            var titleOffset = rowBlocks[0].Y - badge.Y;
+            if (titleOffset is < 4 or > 24)
+            {
+                continue;
+            }
+
             var preview = string.Join(" ", rowBlocks.Skip(1).Select(block => block.Text)).Trim();
             if (!string.IsNullOrWhiteSpace(contact))
             {
@@ -139,7 +184,7 @@ public sealed class VisualWeChatClient : IDisposable
     public async Task<string> OpenAndReadTitleAsync(UnreadSession session, CancellationToken cancellationToken)
     {
         _window.Focus();
-        var bounds = _window.BoundingRectangle;
+        var bounds = GetNativeBounds();
         var clickX = bounds.X + (int)(bounds.Width * 0.22);
         Mouse.Click(new Point(clickX, bounds.Y + session.RowY));
         await Task.Delay(700, cancellationToken);
@@ -166,7 +211,7 @@ public sealed class VisualWeChatClient : IDisposable
     public void SendText(string text, bool sendWithCtrlEnter)
     {
         _window.Focus();
-        var bounds = _window.BoundingRectangle;
+        var bounds = GetNativeBounds();
         var inputPoint = new Point(
             bounds.X + (int)(bounds.Width * 0.70),
             bounds.Y + (int)(bounds.Height * 0.78));
@@ -191,28 +236,128 @@ public sealed class VisualWeChatClient : IDisposable
     private Bitmap Capture()
     {
         _window.Focus();
-        var bitmap = _window.Capture();
-        if (bitmap.Width < 600 || bitmap.Height < 450)
+        var bounds = GetNativeBounds();
+        if (bounds.Width < 300 || bounds.Height < 250)
         {
-            bitmap.Dispose();
             throw new InvalidOperationException("微信窗口过小或已隐藏，请恢复窗口后重试。");
         }
 
+        var bitmap = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format24bppRgb);
+        using var graphics = Graphics.FromImage(bitmap);
+        graphics.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size, CopyPixelOperation.SourceCopy);
         return bitmap;
+    }
+
+    private Rectangle GetNativeBounds()
+    {
+        return GetNativeBounds(_window.Properties.NativeWindowHandle.Value);
+    }
+
+    private static Rectangle GetNativeBounds(IntPtr handle)
+    {
+        if (handle == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("无法获取微信窗口句柄。");
+        }
+
+        NativeRect rect;
+        var result = DwmGetWindowAttribute(
+            handle,
+            DwmWindowAttribute.ExtendedFrameBounds,
+            out rect,
+            Marshal.SizeOf<NativeRect>());
+        if (result != 0 && !GetWindowRect(handle, out rect))
+        {
+            throw new InvalidOperationException("无法获取微信窗口位置。");
+        }
+
+        return Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom);
+    }
+
+    private static IReadOnlyList<IntPtr> FindVisibleTopLevelWindows(IReadOnlySet<int> processIds)
+    {
+        var handles = new List<IntPtr>();
+        EnumWindows((handle, _) =>
+        {
+            GetWindowThreadProcessId(handle, out var processId);
+            if (!processIds.Contains((int)processId) || !IsWindowVisible(handle))
+            {
+                return true;
+            }
+
+            try
+            {
+                var bounds = GetNativeBounds(handle);
+                if (bounds.Width >= 300 && bounds.Height >= 250)
+                {
+                    handles.Add(handle);
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                // Ignore transient helper windows that disappear during enumeration.
+            }
+
+            return true;
+        }, IntPtr.Zero);
+        return handles;
+    }
+
+    private static IntPtr FindRestorableTopLevelWindow(IReadOnlySet<int> processIds)
+    {
+        var candidates = new List<(IntPtr Handle, long Area)>();
+        EnumWindows((handle, _) =>
+        {
+            GetWindowThreadProcessId(handle, out var processId);
+            if (!processIds.Contains((int)processId))
+            {
+                return true;
+            }
+
+            var placement = new WindowPlacement { Length = Marshal.SizeOf<WindowPlacement>() };
+            if (!GetWindowPlacement(handle, ref placement))
+            {
+                return true;
+            }
+
+            var width = placement.NormalPosition.Right - placement.NormalPosition.Left;
+            var height = placement.NormalPosition.Bottom - placement.NormalPosition.Top;
+            if (width >= 300 && height >= 250)
+            {
+                candidates.Add((handle, (long)width * height));
+            }
+
+            return true;
+        }, IntPtr.Zero);
+
+        return candidates.OrderByDescending(candidate => candidate.Area)
+            .Select(candidate => candidate.Handle)
+            .FirstOrDefault();
     }
 
     private async Task<OcrResult> DetectAsync(Bitmap bitmap, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return await _ocr.DetectAsync(
-            bitmap,
-            padding: 0,
-            maxSideLen: Math.Max(bitmap.Width, bitmap.Height),
-            boxScoreThresh: 0.45f,
-            boxThresh: 0.3f,
-            unClipRatio: 1.6f,
-            doAngle: false,
-            mostAngle: false);
+        await OcrConsoleLock.WaitAsync(cancellationToken);
+        var originalOutput = Console.Out;
+        try
+        {
+            Console.SetOut(TextWriter.Null);
+            return await _ocr.DetectAsync(
+                bitmap,
+                padding: 0,
+                maxSideLen: Math.Max(bitmap.Width, bitmap.Height),
+                boxScoreThresh: 0.45f,
+                boxThresh: 0.3f,
+                unClipRatio: 1.6f,
+                doAngle: false,
+                mostAngle: false);
+        }
+        finally
+        {
+            Console.SetOut(originalOutput);
+            OcrConsoleLock.Release();
+        }
     }
 
     private static void SetClipboardText(string text)
@@ -240,14 +385,16 @@ public sealed class VisualWeChatClient : IDisposable
 
     private static VisualLayout GetLayout(Size size)
     {
-        var sessionLeft = (int)(size.Width * 0.065);
-        var sessionRight = (int)(size.Width * 0.382);
-        var top = (int)(size.Height * 0.11);
+        var sessionLeft = (int)(size.Width * 0.10);
+        var sessionRight = (int)(size.Width * 0.39);
+        var top = (int)(size.Height * 0.15);
+        var badgeLeft = Math.Clamp((int)(size.Width * 0.173), sessionLeft + 18, sessionRight - 16);
+        var badgeWidth = Math.Max(12, (int)(size.Width * 0.037));
         return new VisualLayout(
             new Rectangle(sessionLeft, top, sessionRight - sessionLeft, size.Height - top),
-            new Rectangle(sessionLeft + 25, top, Math.Min(75, sessionRight - sessionLeft - 25), size.Height - top),
+            new Rectangle(badgeLeft, top, Math.Min(badgeWidth, sessionRight - badgeLeft), size.Height - top),
             new Rectangle(sessionRight, 0, size.Width - sessionRight, Math.Max(60, top)),
-            Math.Max(25, (int)(size.Height * 0.045)));
+            Math.Max(22, (int)(size.Height * 0.065)));
     }
 
     private static int CenterX(TextBlock block) => (block.BoxPoints[0].X + block.BoxPoints[2].X) / 2;
@@ -255,4 +402,78 @@ public sealed class VisualWeChatClient : IDisposable
 
     private sealed record TextBox(string Text, int X, int Y);
     private sealed record VisualLayout(Rectangle SessionArea, Rectangle BadgeSearchArea, Rectangle HeaderArea, int RowHalfHeight);
+    private static readonly SemaphoreSlim OcrConsoleLock = new(1, 1);
+
+    private enum DwmWindowAttribute
+    {
+        ExtendedFrameBounds = 9
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WindowPlacement
+    {
+        public int Length;
+        public int Flags;
+        public int ShowCommand;
+        public NativePoint MinPosition;
+        public NativePoint MaxPosition;
+        public NativeRect NormalPosition;
+    }
+
+    private enum ShowWindowCommand
+    {
+        Restore = 9
+    }
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmGetWindowAttribute(
+        IntPtr windowHandle,
+        DwmWindowAttribute attribute,
+        out NativeRect value,
+        int valueSize);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr windowHandle, out NativeRect rect);
+
+    private delegate bool EnumWindowsCallback(IntPtr windowHandle, IntPtr parameter);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumWindows(EnumWindowsCallback callback, IntPtr parameter);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr windowHandle);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr windowHandle, out uint processId);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowPlacement(IntPtr windowHandle, ref WindowPlacement placement);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ShowWindow(IntPtr windowHandle, ShowWindowCommand command);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(IntPtr windowHandle);
 }

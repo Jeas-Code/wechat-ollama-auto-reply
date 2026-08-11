@@ -34,4 +34,13 @@ public sealed class VisualMessagePolicyTests
         Assert.True(VisualMessagePolicy.IsLikelyPrivateChat("张三", allowed));
         Assert.False(VisualMessagePolicy.IsLikelyPrivateChat("李四", allowed));
     }
+
+    [Theory]
+    [InlineData("诗诗老婆..", "诗诗老婆")]
+    [InlineData("永远偏爱°", "永远偏爱")]
+    [InlineData("  张 三  ", "张三")]
+    public void ContactKey_RemovesOcrPunctuationNoise(string input, string expected)
+    {
+        Assert.Equal(expected, VisualMessagePolicy.ContactKey(input));
+    }
 }

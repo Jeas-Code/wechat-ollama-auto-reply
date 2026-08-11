@@ -46,6 +46,9 @@ public static partial class VisualMessagePolicy
     public static string Normalize(string value) =>
         Regex.Replace(value ?? string.Empty, @"[\s\u200B\uFEFF]", string.Empty).Trim('"', '\'', '“', '”');
 
+    public static string ContactKey(string value) =>
+        Regex.Replace(Normalize(value), @"[^\p{L}\p{N}]", string.Empty).ToUpperInvariant();
+
     [GeneratedRegex(@"[（(]\s*\d+\s*[）)]$")]
     private static partial Regex GroupCountSuffix();
 

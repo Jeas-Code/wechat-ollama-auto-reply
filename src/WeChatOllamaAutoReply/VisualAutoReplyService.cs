@@ -13,10 +13,11 @@ public sealed class VisualAutoReplyService(
 
     public async Task RunAsync()
     {
-        var baseline = (await wechat.DetectUnreadSessionsAsync(applicationToken))
+        var suppressed = (await wechat.DetectUnreadSessionsAsync(applicationToken))
             .Select(session => session.Key)
             .ToHashSet(StringComparer.Ordinal);
-        Console.WriteLine($"已建立未读基线（{baseline.Count} 项）；启动前已有未读不会自动回复。");
+        var pending = new Dictionary<string, int>(StringComparer.Ordinal);
+        Console.WriteLine($"已建立未读基线（{suppressed.Count} 项）；启动前已有未读不会自动回复。");
 
         while (!applicationToken.IsCancellationRequested)
         {
@@ -33,12 +34,24 @@ public sealed class VisualAutoReplyService(
             }
 
             var currentKeys = current.Select(session => session.Key).ToHashSet(StringComparer.Ordinal);
-            foreach (var session in current.Where(session => !baseline.Contains(session.Key)))
+            suppressed.RemoveWhere(key => !currentKeys.Contains(key));
+            foreach (var key in pending.Keys.Where(key => !currentKeys.Contains(key)).ToArray())
             {
-                await ProcessAsync(session);
+                pending.Remove(key);
             }
 
-            baseline = currentKeys;
+            foreach (var session in current.Where(session => session.Key.Length > 0 && !suppressed.Contains(session.Key)))
+            {
+                pending[session.Key] = pending.GetValueOrDefault(session.Key) + 1;
+                if (pending[session.Key] < 2)
+                {
+                    continue;
+                }
+
+                suppressed.Add(session.Key);
+                pending.Remove(session.Key);
+                await ProcessAsync(session);
+            }
         }
     }
 
