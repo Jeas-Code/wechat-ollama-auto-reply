@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/WeChatOllamaAutoReply/WeChatOllamaAutoReply.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/WeChatOllamaAutoReply.Tests/WeChatOllamaAutoReply.Tests.csproj" />
+  </Folder>
+</Solution>

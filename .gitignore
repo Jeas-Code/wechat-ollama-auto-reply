@@ -1,0 +1,26 @@
+# Build outputs
+bin/
+obj/
+.vs/
+.idea/
+TestResults/
+
+# Local toolchains and virtual environments
+.dotnet/
+.venv/
+__pycache__/
+
+# Runtime artifacts
+Captures/
+Videos/
+wxauto_download/
+*.log
+
+# OCR model binaries are downloaded separately
+models/*.onnx
+models/*.txt
+!models/README.md
+
+# OS files
+.DS_Store
+Thumbs.db
