@@ -16,7 +16,9 @@
 - 默认提示词禁止替用户承诺转账、借款、合同、验证码及其他高影响事项。
 - 支持本次运行内的聊天上下文、重复消息保护、Ollama 短暂故障重试。
 - 启动时先记录现有未读基线，只处理启动后新出现的未读，避免误回历史消息。
-- `--check` 不监听不发送；`--dry-run` 监听并生成，但不发送。
+- `--check` 不监听、不点击、不发送；`--dry-run` 只验证新红点状态机，零点击、零发送。
+- 正式模式强制要求 `AICHAT_ALLOWED_CONTACTS` 白名单；联系人、预览和红点连续三帧稳定后才允许一次点击。
+- 点击前重新截图复核，点击后标题连续识别两次且与白名单完全一致才会回复；任何失败均锁定该红点，不会重试点击。
 
 ## 环境要求
 
@@ -48,15 +50,16 @@ dotnet restore AIChat.slnx
 dotnet run --project src/WeChatOllamaAutoReply -- --check
 ```
 
-4. 推荐先试运行，确认只捕获预期私聊：
+4. 推荐先试运行，确认只捕获预期私聊。dry-run 不会点击微信：
 
 ```powershell
 dotnet run --project src/WeChatOllamaAutoReply -- --dry-run
 ```
 
-5. 确认无误后启动自动回复；按 `Ctrl+C` 停止：
+5. 配置明确的联系人白名单后启动自动回复；按 `Ctrl+C` 停止：
 
 ```powershell
+$env:AICHAT_ALLOWED_CONTACTS = '张三,李四'
 dotnet run --project src/WeChatOllamaAutoReply
 ```
 
@@ -78,9 +81,9 @@ dotnet run --project src/WeChatOllamaAutoReply
 | `AICHAT_MAX_REPLY_CHARS` | `500` | 回复最大字符数，20–4000 |
 | `AICHAT_OLLAMA_TIMEOUT_SECONDS` | `120` | Ollama 超时秒数，10–600 |
 | `AICHAT_POLL_SECONDS` | `3` | 微信截图轮询间隔，1–30 秒 |
-| `AICHAT_ALLOWED_CONTACTS` | 空 | 可选联系人白名单，逗号分隔；空表示允许所有疑似好友私聊 |
+| `AICHAT_ALLOWED_CONTACTS` | 空 | 正式模式必填的联系人白名单，逗号分隔；为空时禁止点击和发送 |
 | `AICHAT_SEND_HOTKEY` | `ENTER` | 微信发送快捷键：`ENTER` 或 `CTRL_ENTER` |
-| `AICHAT_DRY_RUN` | `false` | `true` 时生成但不发送 |
+| `AICHAT_DRY_RUN` | `false` | `true` 时只验证红点稳定性，零点击、零发送 |
 
 PowerShell 示例：
 

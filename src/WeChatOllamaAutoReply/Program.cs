@@ -50,8 +50,14 @@ public static class Program
                 return 0;
             }
 
+            if (!options.DryRun && options.AllowedContacts.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    "安全模式要求先设置 AICHAT_ALLOWED_CONTACTS；未配置联系人白名单时禁止点击和发送。");
+            }
+
             Console.WriteLine(options.DryRun
-                ? "好友私聊视觉监听已启动（dry-run：只生成，不发送）。按 Ctrl+C 停止。"
+                ? "好友私聊视觉监听已启动（dry-run：零点击、零发送）。按 Ctrl+C 停止。"
                 : "好友私聊视觉监听已启动。按 Ctrl+C 停止。");
 
             try
@@ -86,7 +92,7 @@ public static class Program
 
             参数：
               --check     只检查 Ollama、OCR 模型和微信窗口，不监听、不发送
-              --dry-run   启动监听并生成回复，但不发送
+              --dry-run   只验证新红点稳定性，零点击、零发送
               --help, -h  显示帮助
 
             配置请参阅 README.md 中的环境变量表。

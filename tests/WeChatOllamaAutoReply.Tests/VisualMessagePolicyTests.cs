@@ -43,4 +43,15 @@ public sealed class VisualMessagePolicyTests
     {
         Assert.Equal(expected, VisualMessagePolicy.ContactKey(input));
     }
+
+    [Theory]
+    [InlineData("张三", "张三", true)]
+    [InlineData("张三..", "张三", true)]
+    [InlineData("张三", "张三丰", false)]
+    [InlineData("医刷", "族刷", false)]
+    [InlineData("平", "平", false)]
+    public void SameContact_RequiresExactNormalizedName(string expected, string actual, bool result)
+    {
+        Assert.Equal(result, VisualMessagePolicy.SameContact(expected, actual));
+    }
 }

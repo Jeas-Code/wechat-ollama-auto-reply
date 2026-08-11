@@ -43,6 +43,13 @@ public static partial class VisualMessagePolicy
                 right.Contains(left, StringComparison.OrdinalIgnoreCase));
     }
 
+    public static bool SameContact(string expected, string actual)
+    {
+        var left = ContactKey(expected);
+        var right = ContactKey(actual);
+        return left.Length >= 2 && string.Equals(left, right, StringComparison.Ordinal);
+    }
+
     public static string Normalize(string value) =>
         Regex.Replace(value ?? string.Empty, @"[\s\u200B\uFEFF]", string.Empty).Trim('"', '\'', '“', '”');
 

@@ -161,6 +161,7 @@ public sealed class VisualWeChatClient : IDisposable
                 .ToArray();
             if (rowBlocks.Length == 0)
             {
+                sessions.Add(new UnreadSession(string.Empty, string.Empty, badge.Y));
                 continue;
             }
 
@@ -168,6 +169,7 @@ public sealed class VisualWeChatClient : IDisposable
             var titleOffset = rowBlocks[0].Y - badge.Y;
             if (titleOffset is < 4 or > 24)
             {
+                sessions.Add(new UnreadSession(string.Empty, string.Empty, badge.Y));
                 continue;
             }
 
@@ -178,17 +180,42 @@ public sealed class VisualWeChatClient : IDisposable
             }
         }
 
-        return sessions.GroupBy(session => session.Key).Select(group => group.First()).ToArray();
+        return sessions.OrderBy(session => session.RowY).ToArray();
     }
 
     public async Task<string> OpenAndReadTitleAsync(UnreadSession session, CancellationToken cancellationToken)
     {
+        var freshMarkers = await DetectUnreadSessionsAsync(cancellationToken);
+        var fresh = freshMarkers
+            .Where(marker => Math.Abs(marker.RowY - session.RowY) <= 6)
+            .Where(marker => VisualMessagePolicy.SameContact(marker.Contact, session.Contact))
+            .Where(marker => VisualMessagePolicy.Normalize(marker.Preview) == VisualMessagePolicy.Normalize(session.Preview))
+            .OrderBy(marker => Math.Abs(marker.RowY - session.RowY))
+            .FirstOrDefault();
+        if (fresh is null)
+        {
+            throw new InvalidOperationException("点击前复核失败：未读红点、联系人或消息预览已经变化。");
+        }
+
         _window.Focus();
         var bounds = GetNativeBounds();
         var clickX = bounds.X + (int)(bounds.Width * 0.22);
-        Mouse.Click(new Point(clickX, bounds.Y + session.RowY));
+        Mouse.Click(new Point(clickX, bounds.Y + fresh.RowY));
         await Task.Delay(700, cancellationToken);
 
+        var firstTitle = await ReadTitleAsync(cancellationToken);
+        await Task.Delay(300, cancellationToken);
+        var secondTitle = await ReadTitleAsync(cancellationToken);
+        if (!VisualMessagePolicy.SameContact(firstTitle, secondTitle))
+        {
+            throw new InvalidOperationException("点击后标题连续两次识别不一致，已取消回复。");
+        }
+
+        return secondTitle;
+    }
+
+    private async Task<string> ReadTitleAsync(CancellationToken cancellationToken)
+    {
         using var bitmap = Capture();
         var layout = GetLayout(bitmap.Size);
         using var header = bitmap.Clone(layout.HeaderArea, bitmap.PixelFormat);
@@ -208,9 +235,22 @@ public sealed class VisualWeChatClient : IDisposable
         }
     }
 
-    public void SendText(string text, bool sendWithCtrlEnter)
+    public async Task SendTextAsync(
+        string text,
+        string expectedTitle,
+        bool sendWithCtrlEnter,
+        CancellationToken cancellationToken)
     {
         _window.Focus();
+        var firstTitle = await ReadTitleAsync(cancellationToken);
+        await Task.Delay(250, cancellationToken);
+        var secondTitle = await ReadTitleAsync(cancellationToken);
+        if (!VisualMessagePolicy.SameContact(expectedTitle, firstTitle) ||
+            !VisualMessagePolicy.SameContact(expectedTitle, secondTitle))
+        {
+            throw new InvalidOperationException("发送前标题复核失败，可能已切换会话；已取消发送。");
+        }
+
         var bounds = GetNativeBounds();
         var inputPoint = new Point(
             bounds.X + (int)(bounds.Width * 0.70),

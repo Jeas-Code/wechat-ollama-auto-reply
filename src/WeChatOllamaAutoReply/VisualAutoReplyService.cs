@@ -13,11 +13,17 @@ public sealed class VisualAutoReplyService(
 
     public async Task RunAsync()
     {
-        var suppressed = (await wechat.DetectUnreadSessionsAsync(applicationToken))
-            .Select(session => session.Key)
-            .ToHashSet(StringComparer.Ordinal);
-        var pending = new Dictionary<string, int>(StringComparer.Ordinal);
-        Console.WriteLine($"已建立未读基线（{suppressed.Count} 项）；启动前已有未读不会自动回复。");
+        if (!options.DryRun && options.AllowedContacts.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "安全模式要求先设置 AICHAT_ALLOWED_CONTACTS；未配置联系人白名单时禁止点击和发送。");
+        }
+
+        var baseline = await wechat.DetectUnreadSessionsAsync(applicationToken);
+        var gate = new UnreadClickGate();
+        gate.Initialize(baseline);
+        var consecutiveDetectionFailures = 0;
+        Console.WriteLine($"已建立未读红点基线（{baseline.Count} 项）；启动前已有红点不会被点击。");
 
         while (!applicationToken.IsCancellationRequested)
         {
@@ -29,27 +35,32 @@ public sealed class VisualAutoReplyService(
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[{DateTime.Now:HH:mm:ss}] 微信视觉检测失败：{ex.Message}");
+                consecutiveDetectionFailures++;
+                Console.Error.WriteLine(
+                    $"[{DateTime.Now:HH:mm:ss}] 微信视觉检测失败 " +
+                    $"({consecutiveDetectionFailures}/3)：{ex.Message}");
+                if (consecutiveDetectionFailures >= 3)
+                {
+                    Console.Error.WriteLine("连续检测失败，服务已安全停止；请修复窗口状态后手动重启。");
+                    return;
+                }
+
                 continue;
             }
 
-            var currentKeys = current.Select(session => session.Key).ToHashSet(StringComparer.Ordinal);
-            suppressed.RemoveWhere(key => !currentKeys.Contains(key));
-            foreach (var key in pending.Keys.Where(key => !currentKeys.Contains(key)).ToArray())
-            {
-                pending.Remove(key);
-            }
+            consecutiveDetectionFailures = 0;
+            var ready = gate.Observe(current);
 
-            foreach (var session in current.Where(session => session.Key.Length > 0 && !suppressed.Contains(session.Key)))
+            foreach (var session in ready)
             {
-                pending[session.Key] = pending.GetValueOrDefault(session.Key) + 1;
-                if (pending[session.Key] < 2)
+                if (options.DryRun)
                 {
+                    Console.WriteLine(
+                        $"[{DateTime.Now:HH:mm:ss}] [dry-run] 稳定检测到新红点：" +
+                        $"联系人={session.Contact}，行={session.RowY}；零点击、零发送。");
                     continue;
                 }
 
-                suppressed.Add(session.Key);
-                pending.Remove(session.Key);
                 await ProcessAsync(session);
             }
         }
@@ -57,6 +68,12 @@ public sealed class VisualAutoReplyService(
 
     private async Task ProcessAsync(UnreadSession session)
     {
+        if (!options.AllowedContacts.Any(contact => VisualMessagePolicy.SameContact(contact, session.Contact)))
+        {
+            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] 已忽略白名单外联系人：{session.Contact}");
+            return;
+        }
+
         if (!VisualMessagePolicy.IsPlainTextPreview(session.Preview))
         {
             Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] 已忽略 {session.Contact} 的非文字预览。");
@@ -78,7 +95,8 @@ public sealed class VisualAutoReplyService(
                 return;
             }
 
-            if (!VisualMessagePolicy.NamesMatch(session.Contact, title))
+            if (!VisualMessagePolicy.SameContact(session.Contact, title) ||
+                !options.AllowedContacts.Any(contact => VisualMessagePolicy.SameContact(contact, title)))
             {
                 Console.Error.WriteLine($"[{DateTime.Now:HH:mm:ss}] 会话标题校验失败，未回复：列表={session.Contact}，标题={title}");
                 return;
@@ -93,13 +111,7 @@ public sealed class VisualAutoReplyService(
 
             Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] 收到 {title} 的文字消息，正在调用 {options.Model}…");
             var reply = await ollama.ReplyAsync(prompt, applicationToken);
-            if (options.DryRun)
-            {
-                Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] [dry-run] 已生成 {reply.Length} 字回复，未发送。");
-                return;
-            }
-
-            wechat.SendText(reply, options.SendWithCtrlEnter);
+            await wechat.SendTextAsync(reply, title, options.SendWithCtrlEnter, applicationToken);
             lock (history)
             {
                 history.Add(snapshot);
