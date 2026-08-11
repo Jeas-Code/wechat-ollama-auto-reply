@@ -44,21 +44,25 @@ public static class Program
                 var badgeText = check.BadgeCandidates.Count == 0
                     ? "无"
                     : string.Join(", ", check.BadgeCandidates.Select(point => $"({point.X},{point.Y})"));
+                var mutedText = check.MutedBadgeCandidates.Count == 0
+                    ? "无"
+                    : string.Join(", ", check.MutedBadgeCandidates.Select(point => $"({point.X},{point.Y})"));
                 Console.WriteLine(
                     $"自检完成：窗口 {check.WindowSize.Width}x{check.WindowSize.Height}，" +
-                    $"OCR {check.TextBlockCount} 个文本块，红点候选 {badgeText}，映射未读 {unread.Count} 项；未监听、未发送。");
+                    $"OCR {check.TextBlockCount} 个文本块，红点候选 {badgeText}，" +
+                    $"其中免打扰 {mutedText}，映射未读 {unread.Count} 项；未监听、未发送。");
                 return 0;
             }
 
-            if (!options.DryRun && options.AllowedContacts.Count == 0)
+            if (!options.DryRun && options.AllowedContacts.Count == 0 && !options.AllowAllUnmutedChats)
             {
                 throw new InvalidOperationException(
-                    "安全模式要求先设置 AICHAT_ALLOWED_CONTACTS；未配置联系人白名单时禁止点击和发送。");
+                    "安全模式要求设置 AICHAT_ALLOWED_CONTACTS，或显式启用 AICHAT_ALLOW_ALL_UNMUTED_CHATS=true。");
             }
 
             Console.WriteLine(options.DryRun
-                ? "好友私聊视觉监听已启动（dry-run：零点击、零发送）。按 Ctrl+C 停止。"
-                : "好友私聊视觉监听已启动。按 Ctrl+C 停止。");
+                ? "个人与非免打扰群聊监听已启动（dry-run：零点击、零发送）。按 Ctrl+C 停止。"
+                : "个人与非免打扰群聊自动回复已启动。按 Ctrl+C 停止。");
 
             try
             {

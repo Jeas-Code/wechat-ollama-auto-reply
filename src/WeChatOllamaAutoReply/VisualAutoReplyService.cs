@@ -13,10 +13,10 @@ public sealed class VisualAutoReplyService(
 
     public async Task RunAsync()
     {
-        if (!options.DryRun && options.AllowedContacts.Count == 0)
+        if (!options.DryRun && options.AllowedContacts.Count == 0 && !options.AllowAllUnmutedChats)
         {
             throw new InvalidOperationException(
-                "安全模式要求先设置 AICHAT_ALLOWED_CONTACTS；未配置联系人白名单时禁止点击和发送。");
+                "安全模式要求设置 AICHAT_ALLOWED_CONTACTS，或显式启用 AICHAT_ALLOW_ALL_UNMUTED_CHATS=true。");
         }
 
         var baseline = await wechat.DetectUnreadSessionsAsync(applicationToken);
@@ -68,7 +68,21 @@ public sealed class VisualAutoReplyService(
 
     private async Task ProcessAsync(UnreadSession session)
     {
-        if (!options.AllowedContacts.Any(contact => VisualMessagePolicy.SameContact(contact, session.Contact)))
+        if (session.IsMuted)
+        {
+            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] 已忽略免打扰会话：{session.Contact}");
+            return;
+        }
+
+        if (VisualMessagePolicy.IsSystemChat(session.Contact))
+        {
+            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] 已忽略系统会话：{session.Contact}");
+            return;
+        }
+
+        if (!options.AllowAllUnmutedChats &&
+            !options.AllowedContacts.Any(contact =>
+                VisualMessagePolicy.ConversationMatchesList(contact, session.Contact)))
         {
             Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] 已忽略白名单外联系人：{session.Contact}");
             return;
@@ -89,14 +103,19 @@ public sealed class VisualAutoReplyService(
         try
         {
             var title = await wechat.OpenAndReadTitleAsync(session, applicationToken);
-            if (!VisualMessagePolicy.IsLikelyPrivateChat(title, options.AllowedContacts))
+            if (!VisualMessagePolicy.IsSupportedConversation(
+                    title,
+                    options.AllowedContacts,
+                    options.AllowAllUnmutedChats))
             {
-                Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] 已忽略非私聊会话：{title}");
+                Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] 已忽略不支持的会话：{title}");
                 return;
             }
 
-            if (!VisualMessagePolicy.SameContact(session.Contact, title) ||
-                !options.AllowedContacts.Any(contact => VisualMessagePolicy.SameContact(contact, title)))
+            if (!VisualMessagePolicy.ConversationMatchesList(session.Contact, title) ||
+                (!options.AllowAllUnmutedChats &&
+                 !options.AllowedContacts.Any(contact =>
+                     VisualMessagePolicy.ConversationMatchesList(contact, title))))
             {
                 Console.Error.WriteLine($"[{DateTime.Now:HH:mm:ss}] 会话标题校验失败，未回复：列表={session.Contact}，标题={title}");
                 return;

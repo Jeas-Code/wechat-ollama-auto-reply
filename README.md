@@ -1,6 +1,6 @@
 # 微信 Ollama AI 自动回复
 
-在 Windows 电脑版微信中监听**好友私聊文字消息**，调用本机 Ollama 的
+在 Windows 电脑版微信中监听**个人聊天和未开启免打扰的群聊文字消息**，调用本机 Ollama 的
 `gemma4:12b` 生成回复并自动发送。消息与上下文只提交到默认的本地地址
 `127.0.0.1:11434`，不接入云端聊天服务。
 
@@ -10,15 +10,16 @@
 
 ## 功能边界
 
-- 点击未读会话后会再次 OCR 标题；群聊人数标题、公众号、服务通知等会话全部忽略。
+- 点击未读会话后会再次 OCR 标题；个人聊天和未开启免打扰的群聊可回复，公众号、服务通知等会话忽略。
 - 只处理对方发来的文字；本人消息、系统消息、图片、语音、文件等全部忽略。
 - 不点击红包或转账，不读取图片或语音，不自动接受好友请求。
 - 默认提示词禁止替用户承诺转账、借款、合同、验证码及其他高影响事项。
 - 支持本次运行内的聊天上下文、重复消息保护、Ollama 短暂故障重试。
 - 启动时先记录现有未读基线，只处理启动后新出现的未读，避免误回历史消息。
 - `--check` 不监听、不点击、不发送；`--dry-run` 只验证新红点状态机，零点击、零发送。
-- 正式模式强制要求 `AICHAT_ALLOWED_CONTACTS` 白名单；联系人、预览和红点连续三帧稳定后才允许一次点击。
-- 点击前重新截图复核，点击后标题连续识别两次且与白名单完全一致才会回复；任何失败均锁定该红点，不会重试点击。
+- 正式模式要求配置 `AICHAT_ALLOWED_CONTACTS` 白名单，或显式设置 `AICHAT_ALLOW_ALL_UNMUTED_CHATS=true`。
+- 联系人、预览、红点和免打扰状态连续三帧稳定后才允许一次点击；免打扰群聊不会点击。
+- 点击前重新截图复核，点击后标题连续识别两次且会话主体一致才会回复；任何失败均锁定该红点，不会重试点击。
 
 ## 环境要求
 
@@ -50,7 +51,7 @@ dotnet restore AIChat.slnx
 dotnet run --project src/WeChatOllamaAutoReply -- --check
 ```
 
-4. 推荐先试运行，确认只捕获预期私聊。dry-run 不会点击微信：
+4. 推荐先试运行，确认只捕获预期个人聊天和群聊。dry-run 不会点击微信：
 
 ```powershell
 dotnet run --project src/WeChatOllamaAutoReply -- --dry-run
@@ -60,6 +61,13 @@ dotnet run --project src/WeChatOllamaAutoReply -- --dry-run
 
 ```powershell
 $env:AICHAT_ALLOWED_CONTACTS = '张三,李四'
+dotnet run --project src/WeChatOllamaAutoReply
+```
+
+如需处理全部个人聊天和全部未开启免打扰的群聊，必须显式启用：
+
+```powershell
+$env:AICHAT_ALLOW_ALL_UNMUTED_CHATS = 'true'
 dotnet run --project src/WeChatOllamaAutoReply
 ```
 
@@ -81,7 +89,8 @@ dotnet run --project src/WeChatOllamaAutoReply
 | `AICHAT_MAX_REPLY_CHARS` | `500` | 回复最大字符数，20–4000 |
 | `AICHAT_OLLAMA_TIMEOUT_SECONDS` | `120` | Ollama 超时秒数，10–600 |
 | `AICHAT_POLL_SECONDS` | `3` | 微信截图轮询间隔，1–30 秒 |
-| `AICHAT_ALLOWED_CONTACTS` | 空 | 正式模式必填的联系人白名单，逗号分隔；为空时禁止点击和发送 |
+| `AICHAT_ALLOWED_CONTACTS` | 空 | 联系人或群聊白名单，逗号分隔 |
+| `AICHAT_ALLOW_ALL_UNMUTED_CHATS` | `false` | 显式允许全部个人聊天和未开启免打扰的群聊；公众号和系统会话仍排除 |
 | `AICHAT_SEND_HOTKEY` | `ENTER` | 微信发送快捷键：`ENTER` 或 `CTRL_ENTER` |
 | `AICHAT_DRY_RUN` | `false` | `true` 时只验证红点稳定性，零点击、零发送 |
 
@@ -105,7 +114,7 @@ dotnet test AIChat.slnx --configuration Release --no-build
 
 - `Program.cs`：启动、自检和视觉监听。
 - `VisualWeChatClient.cs`：窗口截图、OCR、会话点击与文本发送。
-- `VisualAutoReplyService.cs`：未读基线、私聊校验和回复闭环。
+- `VisualAutoReplyService.cs`：未读基线、个人/群聊校验、免打扰拦截和回复闭环。
 - `RedBadgeDetector.cs`：从会话列表识别红色未读标记。
 - `VisualMessagePolicy.cs`：群聊/系统会话与非文字预览拦截。
 - `ConversationComposer.cs`：可测试的角色映射、历史截断与去重。
@@ -117,7 +126,7 @@ dotnet test AIChat.slnx --configuration Release --no-build
   运行 `--check`。
 - OCR 和红点检测是启发式方案，强烈建议先配置 `AICHAT_ALLOWED_CONTACTS` 并使用
   `--dry-run` 观察。
-- 当前只支持文字私聊，不支持图片理解、语音、引用、群聊或朋友圈。
+- 当前只支持个人与群聊的文字预览，不支持图片理解、语音、引用或朋友圈；免打扰群聊不会自动回复。
 - 自动化和模型都可能犯错。涉及资金、合同、隐私、法律、医疗或账号安全时必须人工确认。
 
 ## 致谢与许可

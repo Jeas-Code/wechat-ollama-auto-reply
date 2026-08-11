@@ -52,6 +52,33 @@ public sealed class UnreadClickGateTests
         Assert.Empty(gate.Observe([Marker("张三", "你好", 250)]));
     }
 
+    [Fact]
+    public void MutedMarker_NeverBecomesReady()
+    {
+        var gate = new UnreadClickGate();
+        gate.Initialize([]);
+        var marker = new UnreadSession("项目群（12）", "新消息", 180, IsMuted: true);
+
+        Assert.Empty(gate.Observe([marker]));
+        Assert.Empty(gate.Observe([marker]));
+        Assert.Empty(gate.Observe([marker]));
+        Assert.Empty(gate.Observe([marker]));
+    }
+
+    [Fact]
+    public void MuteStateChange_ResetsStability()
+    {
+        var gate = new UnreadClickGate();
+        gate.Initialize([]);
+        var marker = Marker("项目群", "新消息", 180);
+
+        Assert.Empty(gate.Observe([marker]));
+        Assert.Empty(gate.Observe([marker with { IsMuted = true }]));
+        Assert.Empty(gate.Observe([marker]));
+        Assert.Empty(gate.Observe([marker]));
+        Assert.Single(gate.Observe([marker]));
+    }
+
     private static UnreadSession Marker(string contact, string preview, int rowY) =>
         new(contact, preview, rowY);
 }

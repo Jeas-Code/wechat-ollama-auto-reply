@@ -21,6 +21,59 @@ public static partial class VisualMessagePolicy
         return allowedContacts.Count == 0 || allowedContacts.Any(contact => NamesMatch(contact, normalized));
     }
 
+    public static bool IsSupportedConversation(
+        string title,
+        IReadOnlySet<string> allowedContacts,
+        bool allowAllUnmutedChats)
+    {
+        var normalized = Normalize(title);
+        if (normalized.Length == 0 || SystemChats.Contains(normalized))
+        {
+            return false;
+        }
+
+        return allowAllUnmutedChats ||
+               allowedContacts.Any(contact => ConversationMatchesList(contact, normalized));
+    }
+
+    public static bool IsGroupChat(string title) => GroupCountSuffix().IsMatch(Normalize(title));
+
+    public static bool IsSystemChat(string title) => SystemChats.Contains(Normalize(title));
+
+    public static bool ConversationMatchesList(string listTitle, string openedTitle)
+    {
+        if (SameContact(listTitle, openedTitle))
+        {
+            return true;
+        }
+
+        if (!IsGroupChat(openedTitle))
+        {
+            return false;
+        }
+
+        var listKey = ContactKey(listTitle);
+        var groupKey = ContactKey(RemoveGroupCount(openedTitle));
+        return listKey.Length >= 4 && groupKey.Length >= 4 &&
+               (listKey.StartsWith(groupKey, StringComparison.Ordinal) ||
+                groupKey.StartsWith(listKey, StringComparison.Ordinal));
+    }
+
+    public static bool SameConversationTitle(string first, string second)
+    {
+        if (SameContact(first, second))
+        {
+            return true;
+        }
+
+        if (!IsGroupChat(first) || !IsGroupChat(second))
+        {
+            return false;
+        }
+
+        return SameContact(RemoveGroupCount(first), RemoveGroupCount(second));
+    }
+
     public static bool IsPlainTextPreview(string preview)
     {
         var text = preview.Trim();
@@ -55,6 +108,9 @@ public static partial class VisualMessagePolicy
 
     public static string ContactKey(string value) =>
         Regex.Replace(Normalize(value), @"[^\p{L}\p{N}]", string.Empty).ToUpperInvariant();
+
+    private static string RemoveGroupCount(string value) =>
+        GroupCountSuffix().Replace(Normalize(value), string.Empty);
 
     [GeneratedRegex(@"[（(]\s*\d+\s*[）)]$")]
     private static partial Regex GroupCountSuffix();

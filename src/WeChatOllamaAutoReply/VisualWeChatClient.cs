@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows.Forms;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Definitions;
@@ -14,12 +15,16 @@ using RapidOCRLib.Models;
 
 namespace WeChatOllamaAutoReply;
 
-public sealed record UnreadSession(string Contact, string Preview, int RowY)
+public sealed record UnreadSession(string Contact, string Preview, int RowY, bool IsMuted = false)
 {
     public string Key => VisualMessagePolicy.ContactKey(Contact);
 }
 
-public sealed record VisualCheckResult(Size WindowSize, int TextBlockCount, IReadOnlyList<Point> BadgeCandidates);
+public sealed record VisualCheckResult(
+    Size WindowSize,
+    int TextBlockCount,
+    IReadOnlyList<Point> BadgeCandidates,
+    IReadOnlyList<Point> MutedBadgeCandidates);
 
 public sealed class VisualWeChatClient : IDisposable
 {
@@ -74,16 +79,57 @@ public sealed class VisualWeChatClient : IDisposable
             handles = FindVisibleTopLevelWindows(processIds);
         }
 
-        var candidates = handles
-            .Select(handle => automation.FromHandle(handle).AsWindow())
-            .OrderByDescending(window =>
+        var titledHandles = handles
+            .Where(handle =>
             {
-                var bounds = GetNativeBounds(window.Properties.NativeWindowHandle.Value);
-                return bounds.Width * bounds.Height;
+                var nativeTitle = GetWindowTitle(handle);
+                if (string.Equals(nativeTitle, "微信", StringComparison.Ordinal))
+                {
+                    return true;
+                }
+
+                try
+                {
+                    return string.Equals(
+                        automation.FromHandle(handle).Properties.Name.Value,
+                        "微信",
+                        StringComparison.Ordinal);
+                }
+                catch
+                {
+                    return false;
+                }
             })
             .ToArray();
+        if (titledHandles.Length > 0)
+        {
+            handles = titledHandles;
+        }
+        else if (handles.Count > 1)
+        {
+            automation.Dispose();
+            throw new InvalidOperationException("检测到多个 Weixin 顶层窗口，但无法唯一确认标题为“微信”的主窗口。");
+        }
 
-        if (candidates.Length == 0)
+        var candidates = new List<(Window Window, Rectangle Bounds)>();
+        foreach (var handle in handles)
+        {
+            try
+            {
+                candidates.Add((automation.FromHandle(handle).AsWindow(), GetNativeBounds(handle)));
+            }
+            catch (InvalidOperationException)
+            {
+                // Ignore transient Weixin helper windows that disappear during selection.
+            }
+        }
+
+        var orderedCandidates = candidates
+            .OrderByDescending(candidate => candidate.Bounds.Width * candidate.Bounds.Height)
+            .Select(candidate => candidate.Window)
+            .ToArray();
+
+        if (orderedCandidates.Length == 0)
         {
             automation.Dispose();
             var message = processIds.Count > 0
@@ -92,13 +138,13 @@ public sealed class VisualWeChatClient : IDisposable
             throw new InvalidOperationException(message);
         }
 
-        if (candidates.Select(window => window.Properties.ProcessId.Value).Distinct().Count() > 1)
+        if (orderedCandidates.Select(window => window.Properties.ProcessId.Value).Distinct().Count() > 1)
         {
             automation.Dispose();
             throw new InvalidOperationException("检测到多个可见微信窗口。为避免误发，请只保留一个微信窗口。");
         }
 
-        return new VisualWeChatClient(automation, candidates[0], ocr);
+        return new VisualWeChatClient(automation, orderedCandidates[0], ocr);
     }
 
     public async Task<VisualCheckResult> CheckAsync(CancellationToken cancellationToken)
@@ -109,15 +155,21 @@ public sealed class VisualWeChatClient : IDisposable
         {
             bitmap.Save(Path.GetFullPath(debugCapturePath));
         }
-        var layout = GetLayout(bitmap.Size);
-        var badges = RedBadgeDetector.Find(bitmap, layout.BadgeSearchArea);
+        var layout = GetLayout(bitmap);
+        var badges = RedBadgeDetector.Find(bitmap, layout.BadgeSearchArea)
+            .Where(badge => badge.X >= layout.BadgeCenterMinimumX)
+            .ToArray();
+        var mutedBadges = badges
+            .Where(badge => MutedSessionDetector.IsMuted(bitmap, layout.SessionArea.Right, badge.Y))
+            .ToArray();
         var result = await DetectAsync(bitmap, cancellationToken);
         try
         {
             return new VisualCheckResult(
                 bitmap.Size,
                 result.TextBlocks.Count(block => !string.IsNullOrWhiteSpace(block.Text)),
-                badges);
+                badges,
+                mutedBadges);
         }
         finally
         {
@@ -128,9 +180,11 @@ public sealed class VisualWeChatClient : IDisposable
     public async Task<IReadOnlyList<UnreadSession>> DetectUnreadSessionsAsync(CancellationToken cancellationToken)
     {
         using var bitmap = Capture();
-        var layout = GetLayout(bitmap.Size);
-        var badges = RedBadgeDetector.Find(bitmap, layout.BadgeSearchArea);
-        if (badges.Count == 0)
+        var layout = GetLayout(bitmap);
+        var badges = RedBadgeDetector.Find(bitmap, layout.BadgeSearchArea)
+            .Where(badge => badge.X >= layout.BadgeCenterMinimumX)
+            .ToArray();
+        if (badges.Length == 0)
         {
             return [];
         }
@@ -153,6 +207,7 @@ public sealed class VisualWeChatClient : IDisposable
         var sessions = new List<UnreadSession>();
         foreach (var badge in badges)
         {
+            var isMuted = MutedSessionDetector.IsMuted(bitmap, layout.SessionArea.Right, badge.Y);
             var rowBlocks = blocks
                 .Where(block => Math.Abs(block.Y - badge.Y) <= layout.RowHalfHeight)
                 .Where(block => block.X < layout.SessionArea.Width * 0.82)
@@ -161,7 +216,7 @@ public sealed class VisualWeChatClient : IDisposable
                 .ToArray();
             if (rowBlocks.Length == 0)
             {
-                sessions.Add(new UnreadSession(string.Empty, string.Empty, badge.Y));
+                sessions.Add(new UnreadSession(string.Empty, string.Empty, badge.Y, isMuted));
                 continue;
             }
 
@@ -169,14 +224,14 @@ public sealed class VisualWeChatClient : IDisposable
             var titleOffset = rowBlocks[0].Y - badge.Y;
             if (titleOffset is < 4 or > 24)
             {
-                sessions.Add(new UnreadSession(string.Empty, string.Empty, badge.Y));
+                sessions.Add(new UnreadSession(string.Empty, string.Empty, badge.Y, isMuted));
                 continue;
             }
 
             var preview = string.Join(" ", rowBlocks.Skip(1).Select(block => block.Text)).Trim();
             if (!string.IsNullOrWhiteSpace(contact))
             {
-                sessions.Add(new UnreadSession(contact, preview, badge.Y));
+                sessions.Add(new UnreadSession(contact, preview, badge.Y, isMuted));
             }
         }
 
@@ -185,11 +240,17 @@ public sealed class VisualWeChatClient : IDisposable
 
     public async Task<string> OpenAndReadTitleAsync(UnreadSession session, CancellationToken cancellationToken)
     {
+        if (session.IsMuted)
+        {
+            throw new InvalidOperationException("免打扰会话禁止点击。");
+        }
+
         var freshMarkers = await DetectUnreadSessionsAsync(cancellationToken);
         var fresh = freshMarkers
             .Where(marker => Math.Abs(marker.RowY - session.RowY) <= 6)
             .Where(marker => VisualMessagePolicy.SameContact(marker.Contact, session.Contact))
             .Where(marker => VisualMessagePolicy.Normalize(marker.Preview) == VisualMessagePolicy.Normalize(session.Preview))
+            .Where(marker => !marker.IsMuted)
             .OrderBy(marker => Math.Abs(marker.RowY - session.RowY))
             .FirstOrDefault();
         if (fresh is null)
@@ -206,7 +267,7 @@ public sealed class VisualWeChatClient : IDisposable
         var firstTitle = await ReadTitleAsync(cancellationToken);
         await Task.Delay(300, cancellationToken);
         var secondTitle = await ReadTitleAsync(cancellationToken);
-        if (!VisualMessagePolicy.SameContact(firstTitle, secondTitle))
+        if (!VisualMessagePolicy.SameConversationTitle(firstTitle, secondTitle))
         {
             throw new InvalidOperationException("点击后标题连续两次识别不一致，已取消回复。");
         }
@@ -217,7 +278,7 @@ public sealed class VisualWeChatClient : IDisposable
     private async Task<string> ReadTitleAsync(CancellationToken cancellationToken)
     {
         using var bitmap = Capture();
-        var layout = GetLayout(bitmap.Size);
+        var layout = GetLayout(bitmap);
         using var header = bitmap.Clone(layout.HeaderArea, bitmap.PixelFormat);
         var result = await DetectAsync(header, cancellationToken);
         try
@@ -245,8 +306,8 @@ public sealed class VisualWeChatClient : IDisposable
         var firstTitle = await ReadTitleAsync(cancellationToken);
         await Task.Delay(250, cancellationToken);
         var secondTitle = await ReadTitleAsync(cancellationToken);
-        if (!VisualMessagePolicy.SameContact(expectedTitle, firstTitle) ||
-            !VisualMessagePolicy.SameContact(expectedTitle, secondTitle))
+        if (!VisualMessagePolicy.SameConversationTitle(expectedTitle, firstTitle) ||
+            !VisualMessagePolicy.SameConversationTitle(expectedTitle, secondTitle))
         {
             throw new InvalidOperationException("发送前标题复核失败，可能已切换会话；已取消发送。");
         }
@@ -375,6 +436,18 @@ public sealed class VisualWeChatClient : IDisposable
             .FirstOrDefault();
     }
 
+    private static string GetWindowTitle(IntPtr handle)
+    {
+        var length = GetWindowTextLength(handle);
+        if (length <= 0)
+        {
+            return string.Empty;
+        }
+
+        var title = new StringBuilder(length + 1);
+        return GetWindowText(handle, title, title.Capacity) > 0 ? title.ToString() : string.Empty;
+    }
+
     private async Task<OcrResult> DetectAsync(Bitmap bitmap, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -423,25 +496,33 @@ public sealed class VisualWeChatClient : IDisposable
         }
     }
 
-    private static VisualLayout GetLayout(Size size)
+    private static VisualLayout GetLayout(Bitmap bitmap)
     {
-        var sessionLeft = (int)(size.Width * 0.10);
-        var sessionRight = (int)(size.Width * 0.39);
+        var size = bitmap.Size;
+        var sessionRight = WeChatLayoutDetector.FindSessionRight(bitmap);
+        var sessionLeft = (int)(sessionRight * 0.26);
         var top = (int)(size.Height * 0.15);
-        var badgeLeft = Math.Clamp((int)(size.Width * 0.173), sessionLeft + 18, sessionRight - 16);
-        var badgeWidth = Math.Max(12, (int)(size.Width * 0.037));
+        var badgeLeft = Math.Clamp((int)(sessionRight * 0.40), sessionLeft + 18, sessionRight - 16);
+        var badgeRight = Math.Min(sessionRight - 8, (int)(sessionRight * 0.52));
+        var badgeCenterMinimumX = (int)(sessionRight * 0.45);
         return new VisualLayout(
             new Rectangle(sessionLeft, top, sessionRight - sessionLeft, size.Height - top),
-            new Rectangle(badgeLeft, top, Math.Min(badgeWidth, sessionRight - badgeLeft), size.Height - top),
+            new Rectangle(badgeLeft, top, badgeRight - badgeLeft, size.Height - top),
             new Rectangle(sessionRight, 0, size.Width - sessionRight, Math.Max(60, top)),
-            Math.Max(22, (int)(size.Height * 0.065)));
+            Math.Max(22, (int)(size.Height * 0.065)),
+            badgeCenterMinimumX);
     }
 
     private static int CenterX(TextBlock block) => (block.BoxPoints[0].X + block.BoxPoints[2].X) / 2;
     private static int CenterY(TextBlock block) => (block.BoxPoints[0].Y + block.BoxPoints[2].Y) / 2;
 
     private sealed record TextBox(string Text, int X, int Y);
-    private sealed record VisualLayout(Rectangle SessionArea, Rectangle BadgeSearchArea, Rectangle HeaderArea, int RowHalfHeight);
+    private sealed record VisualLayout(
+        Rectangle SessionArea,
+        Rectangle BadgeSearchArea,
+        Rectangle HeaderArea,
+        int RowHalfHeight,
+        int BadgeCenterMinimumX);
     private static readonly SemaphoreSlim OcrConsoleLock = new(1, 1);
 
     private enum DwmWindowAttribute
@@ -504,6 +585,12 @@ public sealed class VisualWeChatClient : IDisposable
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr windowHandle, out uint processId);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowText(IntPtr windowHandle, StringBuilder title, int maximumCount);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowTextLength(IntPtr windowHandle);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

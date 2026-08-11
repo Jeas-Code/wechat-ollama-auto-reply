@@ -54,4 +54,51 @@ public sealed class VisualMessagePolicyTests
     {
         Assert.Equal(result, VisualMessagePolicy.SameContact(expected, actual));
     }
+
+    [Theory]
+    [InlineData("张三", "张三", true)]
+    [InlineData("项目讨论群...", "项目讨论群（12）", true)]
+    [InlineData("项目讨论群", "另一个群（12）", false)]
+    [InlineData("公众号", "公众号", true)]
+    public void ConversationMatchesList_SupportsExactPrivateAndTruncatedGroup(
+        string listTitle,
+        string openedTitle,
+        bool expected)
+    {
+        Assert.Equal(expected, VisualMessagePolicy.ConversationMatchesList(listTitle, openedTitle));
+    }
+
+    [Fact]
+    public void IsSupportedConversation_AllowsGroupsButRejectsSystemChats()
+    {
+        IReadOnlySet<string> empty = new HashSet<string>();
+
+        Assert.True(VisualMessagePolicy.IsSupportedConversation("项目讨论群（12）", empty, true));
+        Assert.True(VisualMessagePolicy.IsSupportedConversation("张三", empty, true));
+        Assert.False(VisualMessagePolicy.IsSupportedConversation("公众号", empty, true));
+        Assert.False(VisualMessagePolicy.IsSupportedConversation("服务通知", empty, true));
+    }
+
+    [Theory]
+    [InlineData("公众号", true)]
+    [InlineData("服务号", true)]
+    [InlineData("服务通知", true)]
+    [InlineData("张三", false)]
+    [InlineData("项目群（12）", false)]
+    public void IsSystemChat_BlocksKnownListEntriesBeforeClick(string title, bool expected)
+    {
+        Assert.Equal(expected, VisualMessagePolicy.IsSystemChat(title));
+    }
+
+    [Theory]
+    [InlineData("项目群（12）", "项目群（13）", true)]
+    [InlineData("项目群（12）", "项目群（12）", true)]
+    [InlineData("项目群（12）", "其他群（12）", false)]
+    public void SameConversationTitle_IgnoresOnlyGroupMemberCount(
+        string first,
+        string second,
+        bool expected)
+    {
+        Assert.Equal(expected, VisualMessagePolicy.SameConversationTitle(first, second));
+    }
 }

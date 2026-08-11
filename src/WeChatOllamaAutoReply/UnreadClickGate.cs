@@ -137,7 +137,8 @@ public sealed class UnreadClickGate(
             var contactKey = VisualMessagePolicy.ContactKey(marker.Contact);
             var previewKey = VisualMessagePolicy.Normalize(marker.Preview);
             StableFrames = contactKey.Length > 0 && previewKey.Length > 0 &&
-                           contactKey == ContactKey && previewKey == PreviewKey
+                           contactKey == ContactKey && previewKey == PreviewKey &&
+                           marker.IsMuted == Latest.IsMuted
                 ? StableFrames + 1
                 : 1;
             ContactKey = contactKey;
@@ -148,6 +149,6 @@ public sealed class UnreadClickGate(
 
         public bool IsReady(int requiredStableFrames) =>
             !Locked && MissingFrames == 0 && StableFrames >= requiredStableFrames &&
-            ContactKey.Length >= 2 && PreviewKey.Length > 0;
+            ContactKey.Length >= 2 && PreviewKey.Length > 0 && !Latest.IsMuted;
     }
 }
