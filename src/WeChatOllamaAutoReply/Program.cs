@@ -4,6 +4,7 @@ public static class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Console.OutputEncoding = System.Text.Encoding.UTF8;
 
         try
@@ -36,6 +37,13 @@ public static class Program
             options.EnsureOcrModelsExist();
             Console.WriteLine("正在初始化本地 OCR 并连接可见微信窗口…");
             using var wechat = await VisualWeChatClient.CreateAsync(options, cancellation.Token);
+            var windowProbe = wechat.ProbeWindow();
+            Console.WriteLine(
+                $"已探测微信窗口：截图位置=({windowProbe.CaptureBounds.Left},{windowProbe.CaptureBounds.Top})，" +
+                $"截图大小={windowProbe.CaptureBounds.Width}x{windowProbe.CaptureBounds.Height}，" +
+                $"输入位置=({windowProbe.InputBounds.Left},{windowProbe.InputBounds.Top})，" +
+                $"输入大小={windowProbe.InputBounds.Width}x{windowProbe.InputBounds.Height}，" +
+                $"会话栏={windowProbe.SessionLeft}..{windowProbe.SessionRight}；监测和点击前会重新探测。");
 
             if (options.CheckOnly)
             {
@@ -51,6 +59,12 @@ public static class Program
                     $"自检完成：窗口 {check.WindowSize.Width}x{check.WindowSize.Height}，" +
                     $"OCR {check.TextBlockCount} 个文本块，红点候选 {badgeText}，" +
                     $"其中免打扰 {mutedText}，映射未读 {unread.Count} 项；未监听、未发送。");
+                foreach (var session in unread)
+                {
+                    Console.WriteLine(
+                        $"  未读映射：联系人={session.Contact}，预览={session.Preview}，" +
+                        $"行={session.RowY}，免打扰={session.IsMuted}");
+                }
                 return 0;
             }
 

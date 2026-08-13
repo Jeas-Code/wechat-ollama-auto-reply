@@ -19,6 +19,7 @@ public sealed record AppOptions
     public int PollIntervalSeconds { get; init; } = 3;
     public IReadOnlySet<string> AllowedContacts { get; init; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     public bool AllowAllUnmutedChats { get; init; }
+    public bool ProcessExistingUnread { get; init; }
     public bool SendWithCtrlEnter { get; init; }
     public bool DryRun { get; init; }
     public bool CheckOnly { get; init; }
@@ -40,6 +41,7 @@ public sealed record AppOptions
             PollIntervalSeconds = ReadInt("AICHAT_POLL_SECONDS", 3, 1, 30),
             AllowedContacts = ReadSet("AICHAT_ALLOWED_CONTACTS"),
             AllowAllUnmutedChats = ReadBool("AICHAT_ALLOW_ALL_UNMUTED_CHATS", false),
+            ProcessExistingUnread = ReadBool("AICHAT_PROCESS_EXISTING_UNREAD", false),
             SendWithCtrlEnter = ReadSendWithCtrlEnter(),
             DryRun = ReadBool("AICHAT_DRY_RUN", false) || args.Contains("--dry-run", StringComparer.OrdinalIgnoreCase),
             CheckOnly = args.Contains("--check", StringComparer.OrdinalIgnoreCase),

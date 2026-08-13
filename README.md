@@ -15,7 +15,7 @@
 - 不点击红包或转账，不读取图片或语音，不自动接受好友请求。
 - 默认提示词禁止替用户承诺转账、借款、合同、验证码及其他高影响事项。
 - 支持本次运行内的聊天上下文、重复消息保护、Ollama 短暂故障重试。
-- 启动时先记录现有未读基线，只处理启动后新出现的未读，避免误回历史消息。
+- 默认启动时记录现有未读基线，只处理启动后新出现的未读；一键启动脚本会同时处理当前可见未读。
 - `--check` 不监听、不点击、不发送；`--dry-run` 只验证新红点状态机，零点击、零发送。
 - 正式模式要求配置 `AICHAT_ALLOWED_CONTACTS` 白名单，或显式设置 `AICHAT_ALLOW_ALL_UNMUTED_CHATS=true`。
 - 联系人、预览、红点和免打扰状态连续三帧稳定后才允许一次点击；免打扰群聊不会点击。
@@ -91,6 +91,7 @@ dotnet run --project src/WeChatOllamaAutoReply
 | `AICHAT_POLL_SECONDS` | `3` | 微信截图轮询间隔，1–30 秒 |
 | `AICHAT_ALLOWED_CONTACTS` | 空 | 联系人或群聊白名单，逗号分隔 |
 | `AICHAT_ALLOW_ALL_UNMUTED_CHATS` | `false` | 显式允许全部个人聊天和未开启免打扰的群聊；公众号和系统会话仍排除 |
+| `AICHAT_PROCESS_EXISTING_UNREAD` | `false` | `true` 时也处理启动时已存在的未读；一键启动脚本默认启用 |
 | `AICHAT_SEND_HOTKEY` | `ENTER` | 微信发送快捷键：`ENTER` 或 `CTRL_ENTER` |
 | `AICHAT_DRY_RUN` | `false` | `true` 时只验证红点稳定性，零点击、零发送 |
 

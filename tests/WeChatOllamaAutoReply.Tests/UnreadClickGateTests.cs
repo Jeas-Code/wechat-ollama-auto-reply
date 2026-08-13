@@ -30,6 +30,18 @@ public sealed class UnreadClickGateTests
     }
 
     [Fact]
+    public void ExistingMarker_WhenUnlocked_RequiresThreeStableFramesAndFiresOnce()
+    {
+        var gate = new UnreadClickGate();
+        var marker = Marker("测试联系人", "你好", 261);
+        gate.Initialize([marker], locked: false);
+
+        Assert.Empty(gate.Observe([marker]));
+        Assert.Single(gate.Observe([marker]));
+        Assert.Empty(gate.Observe([marker]));
+    }
+
+    [Fact]
     public void NewMarker_NameOrPreviewDriftResetsStability()
     {
         var gate = new UnreadClickGate();

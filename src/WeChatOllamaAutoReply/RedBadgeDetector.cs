@@ -4,6 +4,9 @@ namespace WeChatOllamaAutoReply;
 
 public static class RedBadgeDetector
 {
+    public static bool IsPlausibleBadgeCenterX(int badgeCenterX, int sessionRight) =>
+        badgeCenterX >= (int)(sessionRight * 0.44);
+
     public static IReadOnlyList<Point> Find(Bitmap bitmap, Rectangle searchArea)
     {
         var area = Rectangle.Intersect(new Rectangle(Point.Empty, bitmap.Size), searchArea);
@@ -21,7 +24,7 @@ public static class RedBadgeDetector
                 }
 
                 var component = FloodFill(bitmap, area, new Point(x, y), visited);
-                if (component.Count is < 3 or > 250)
+                if (component.Count is < 3 or > 500)
                 {
                     continue;
                 }
@@ -38,7 +41,7 @@ public static class RedBadgeDetector
                 var width = maxX - minX + 1;
                 var height = maxY - minY + 1;
                 var ratio = width / (double)height;
-                if (width is >= 2 and <= 18 && height is >= 2 and <= 18 && ratio is >= 0.5 and <= 2.0)
+                if (width is >= 2 and <= 26 && height is >= 2 and <= 26 && ratio is >= 0.5 and <= 2.0)
                 {
                     results.Add(new Point((minX + maxX) / 2, (minY + maxY) / 2));
                 }

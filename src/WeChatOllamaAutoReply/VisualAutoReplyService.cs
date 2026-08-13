@@ -19,11 +19,13 @@ public sealed class VisualAutoReplyService(
                 "安全模式要求设置 AICHAT_ALLOWED_CONTACTS，或显式启用 AICHAT_ALLOW_ALL_UNMUTED_CHATS=true。");
         }
 
-        var baseline = await wechat.DetectUnreadSessionsAsync(applicationToken);
+        var baseline = await DetectStartupUnreadAsync();
         var gate = new UnreadClickGate();
-        gate.Initialize(baseline);
+        gate.Initialize(baseline, locked: !options.ProcessExistingUnread);
         var consecutiveDetectionFailures = 0;
-        Console.WriteLine($"已建立未读红点基线（{baseline.Count} 项）；启动前已有红点不会被点击。");
+        Console.WriteLine(options.ProcessExistingUnread
+            ? $"已发现当前未读红点（{baseline.Count} 项）；稳定检测三帧后将按策略处理。"
+            : $"已建立未读红点基线（{baseline.Count} 项）；启动前已有红点不会被点击。");
 
         while (!applicationToken.IsCancellationRequested)
         {
@@ -65,6 +67,35 @@ public sealed class VisualAutoReplyService(
             }
         }
     }
+
+    private async Task<IReadOnlyList<UnreadSession>> DetectStartupUnreadAsync()
+    {
+        var current = await wechat.DetectUnreadSessionsAsync(applicationToken);
+        if (!options.ProcessExistingUnread || options.AllowAllUnmutedChats ||
+            options.AllowedContacts.Count == 0 || ContainsAllowedContact(current))
+        {
+            return current;
+        }
+
+        for (var page = 1; page <= 4; page++)
+        {
+            Console.WriteLine($"当前可见列表未发现白名单红点，动态滚动会话栏复检（{page}/4）…");
+            await wechat.ScrollSessionListDownAsync(applicationToken);
+            current = await wechat.DetectUnreadSessionsAsync(applicationToken);
+            if (ContainsAllowedContact(current))
+            {
+                return current;
+            }
+        }
+
+        return current;
+    }
+
+    private bool ContainsAllowedContact(IEnumerable<UnreadSession> sessions) =>
+        sessions.Any(session =>
+            !session.IsMuted &&
+            options.AllowedContacts.Any(contact =>
+                VisualMessagePolicy.ConversationMatchesList(contact, session.Contact)));
 
     private async Task ProcessAsync(UnreadSession session)
     {

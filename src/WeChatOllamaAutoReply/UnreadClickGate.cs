@@ -7,12 +7,12 @@ public sealed class UnreadClickGate(
 {
     private readonly List<Track> _tracks = [];
 
-    public void Initialize(IEnumerable<UnreadSession> baseline)
+    public void Initialize(IEnumerable<UnreadSession> baseline, bool locked = true)
     {
         _tracks.Clear();
         foreach (var marker in baseline.OrderBy(marker => marker.RowY))
         {
-            _tracks.Add(new Track(marker, locked: true));
+            _tracks.Add(new Track(marker, locked));
         }
     }
 

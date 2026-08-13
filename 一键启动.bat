@@ -41,11 +41,13 @@ if exist "%PROJECT_MODELS%\ch_PP-OCRv5_mobile_det.onnx" (
 )
 
 set "AICHAT_ALLOW_ALL_UNMUTED_CHATS=true"
+set "AICHAT_PROCESS_EXISTING_UNREAD=true"
 
 echo ============================================================
 echo WeChat Ollama AI Auto Reply
 echo - Replies to private text messages
 echo - Replies to unmuted group text messages
+echo - Processes unread text messages already visible at startup
 echo - Ignores muted groups, official accounts and system chats
 echo - Press Ctrl+C to stop
 echo ============================================================
