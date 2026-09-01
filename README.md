@@ -20,6 +20,8 @@
 - 正式模式要求配置 `AICHAT_ALLOWED_CONTACTS` 白名单，或显式设置 `AICHAT_ALLOW_ALL_UNMUTED_CHATS=true`。
 - 联系人、预览、红点和免打扰状态连续三帧稳定后才允许一次点击；免打扰群聊不会点击。
 - 点击前重新截图复核，点击后标题连续识别两次且会话主体一致才会回复；任何失败均锁定该红点，不会重试点击。
+- 每次点击、粘贴、回车前都会校验微信处于前台窗口，鼠标移动后校验光标真实到位；焦点被抢或定位失败即取消操作。
+- 粘贴回复前会先清空输入框残留草稿；粘贴后 OCR 复核输入框内容，未识别到回复正文绝不按回车。
 
 ## 环境要求
 
@@ -114,7 +116,8 @@ dotnet test AIChat.slnx --configuration Release --no-build
 核心分层：
 
 - `Program.cs`：启动、自检和视觉监听。
-- `VisualWeChatClient.cs`：窗口截图、OCR、会话点击与文本发送。
+- `VisualWeChatClient.cs`：窗口截图、OCR、前台校验、会话点击与文本发送。
+- `ReplyDraftVerifier.cs`：发送前对输入框 OCR 文本做回复存在性校验。
 - `VisualAutoReplyService.cs`：未读基线、个人/群聊校验、免打扰拦截和回复闭环。
 - `RedBadgeDetector.cs`：从会话列表识别红色未读标记。
 - `VisualMessagePolicy.cs`：群聊/系统会话与非文字预览拦截。
@@ -128,6 +131,7 @@ dotnet test AIChat.slnx --configuration Release --no-build
 - OCR 和红点检测是启发式方案，强烈建议先配置 `AICHAT_ALLOWED_CONTACTS` 并使用
   `--dry-run` 观察。
 - 当前只支持个人与群聊的文字预览，不支持图片理解、语音、引用或朋友圈；免打扰群聊不会自动回复。
+- 粘贴复核依赖输入框 OCR：纯表情、纯符号等无法被 OCR 识别的回复会按失败处理、放弃发送。
 - 自动化和模型都可能犯错。涉及资金、合同、隐私、法律、医疗或账号安全时必须人工确认。
 
 ## 致谢与许可

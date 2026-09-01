@@ -338,6 +338,7 @@ public sealed class VisualWeChatClient : IDisposable
                 $"会话栏={fresh.SessionLeft}..{fresh.SessionRight}，" +
                 $"行={fresh.RowY}，屏幕点击点={clickPoint}");
         }
+        EnsureForeground();
         ClickPhysical(clickPoint);
         await Task.Delay(700, cancellationToken);
 
@@ -384,6 +385,7 @@ public sealed class VisualWeChatClient : IDisposable
         CancellationToken cancellationToken)
     {
         _window.Focus();
+        EnsureForeground();
         var firstTitle = await ReadTitleAsync(cancellationToken);
         await Task.Delay(250, cancellationToken);
         var secondTitle = await ReadTitleAsync(cancellationToken);
@@ -397,9 +399,25 @@ public sealed class VisualWeChatClient : IDisposable
         var inputPoint = WindowInteractionGeometry.GetMessageInputPoint(
             snapshot.Bounds,
             snapshot.Layout.SessionArea.Right);
+        EnsureForeground();
         ClickPhysical(inputPoint);
+        await Task.Delay(150, cancellationToken);
+
+        // 微信会按会话保存输入框草稿；先清空，避免与历史草稿拼接后误发。
+        ClearInputDraft();
         SetClipboardText(text);
         Keyboard.TypeSimultaneously(VirtualKeyShort.CONTROL, VirtualKeyShort.KEY_V);
+        await Task.Delay(300, cancellationToken);
+
+        EnsureForeground();
+        var recognizedDraft = await ReadInputAreaTextAsync(cancellationToken);
+        if (!ReplyDraftVerifier.ContainsReply(recognizedDraft, text))
+        {
+            ClearInputDraft();
+            throw new InvalidOperationException("粘贴后未在输入框识别到回复内容，已清空草稿并取消发送。");
+        }
+
+        EnsureForeground();
         if (sendWithCtrlEnter)
         {
             Keyboard.TypeSimultaneously(VirtualKeyShort.CONTROL, VirtualKeyShort.RETURN);
@@ -407,6 +425,35 @@ public sealed class VisualWeChatClient : IDisposable
         else
         {
             Keyboard.Type(VirtualKeyShort.RETURN);
+        }
+    }
+
+    private static void ClearInputDraft()
+    {
+        Keyboard.TypeSimultaneously(VirtualKeyShort.CONTROL, VirtualKeyShort.KEY_A);
+        Keyboard.Type(VirtualKeyShort.BACK);
+        Thread.Sleep(80);
+    }
+
+    private async Task<string> ReadInputAreaTextAsync(CancellationToken cancellationToken)
+    {
+        using var bitmap = Capture(out _);
+        var layout = GetLayout(bitmap);
+        using var inputArea = bitmap.Clone(layout.InputArea, bitmap.PixelFormat);
+        var result = await DetectAsync(inputArea, cancellationToken);
+        try
+        {
+            return string.Join(
+                " ",
+                result.TextBlocks
+                    .Where(block => !string.IsNullOrWhiteSpace(block.Text))
+                    .OrderBy(block => CenterY(block))
+                    .ThenBy(block => CenterX(block))
+                    .Select(block => block.Text.Trim()));
+        }
+        finally
+        {
+            result.BoxImg?.Dispose();
         }
     }
 
@@ -420,6 +467,7 @@ public sealed class VisualWeChatClient : IDisposable
                 sessionArea.Top + (int)(sessionArea.Height * 0.70),
                 sessionArea.Top,
                 snapshot.Bounds.Height - 2));
+        EnsureForeground();
         MovePointerPhysical(point);
 
         var wheel = new[]
@@ -618,10 +666,35 @@ public sealed class VisualWeChatClient : IDisposable
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        thread.Join();
+        if (!thread.Join(TimeSpan.FromSeconds(5)))
+        {
+            throw new InvalidOperationException("写入剪贴板超时，剪贴板可能被其他程序占用。");
+        }
+
         if (error is not null)
         {
             throw new InvalidOperationException("写入剪贴板失败。", error);
+        }
+    }
+
+    private void EnsureForeground()
+    {
+        var handle = _window.Properties.NativeWindowHandle.Value;
+        if (handle != IntPtr.Zero && GetForegroundWindow() == handle)
+        {
+            return;
+        }
+
+        _window.Focus();
+        if (handle != IntPtr.Zero)
+        {
+            SetForegroundWindow(handle);
+        }
+
+        Thread.Sleep(150);
+        if (handle == IntPtr.Zero || GetForegroundWindow() != handle)
+        {
+            throw new InvalidOperationException("微信窗口未处于前台，为避免点击或输入落入其他窗口，已取消本次操作。");
         }
     }
 
@@ -629,22 +702,33 @@ public sealed class VisualWeChatClient : IDisposable
     {
         MovePointerPhysical(physicalPoint);
 
-        var click = new[]
+        var down = new[]
         {
             new NativeInput
             {
                 Type = InputMouse,
                 Mouse = new NativeMouseInput { Flags = MouseLeftDown }
-            },
+            }
+        };
+        if (SendInput((uint)down.Length, down, Marshal.SizeOf<NativeInput>()) != down.Length)
+        {
+            throw new InvalidOperationException("鼠标按下注入失败，已停止后续处理。");
+        }
+
+        // 按下与抬起之间保留短暂间隔，避免目标应用把零间隔点击吞掉。
+        Thread.Sleep(45);
+
+        var up = new[]
+        {
             new NativeInput
             {
                 Type = InputMouse,
                 Mouse = new NativeMouseInput { Flags = MouseLeftUp }
             }
         };
-        if (SendInput((uint)click.Length, click, Marshal.SizeOf<NativeInput>()) != click.Length)
+        if (SendInput((uint)up.Length, up, Marshal.SizeOf<NativeInput>()) != up.Length)
         {
-            throw new InvalidOperationException("鼠标点击注入不完整，已停止后续处理。");
+            throw new InvalidOperationException("鼠标抬起注入失败，已停止后续处理。");
         }
     }
 
@@ -683,6 +767,15 @@ public sealed class VisualWeChatClient : IDisposable
                 $"无法将鼠标安全定位到动态目标 {physicalPoint}，已取消点击。");
         }
 
+        // 移动注入后校验光标真实位置，防止在锁屏、远程桌面等场景下点击落空。
+        Thread.Sleep(30);
+        if (!GetCursorPos(out var cursor) ||
+            Math.Abs(cursor.X - physicalPoint.X) > 3 ||
+            Math.Abs(cursor.Y - physicalPoint.Y) > 3)
+        {
+            throw new InvalidOperationException(
+                $"鼠标未能到达目标 {physicalPoint}（当前 {cursor.X},{cursor.Y}），已取消点击。");
+        }
     }
 
     private static VisualLayout GetLayout(Bitmap bitmap)
@@ -693,6 +786,7 @@ public sealed class VisualWeChatClient : IDisposable
         var top = WindowInteractionGeometry.GetSessionSearchTop(size.Height);
         var badgeLeft = Math.Clamp((int)(sessionRight * 0.40), sessionLeft + 18, sessionRight - 16);
         var badgeRight = Math.Min(sessionRight - 8, (int)(sessionRight * 0.52));
+        var inputTop = Math.Max((int)(size.Height * 0.70), size.Height - 320);
         return new VisualLayout(
             new Rectangle(sessionLeft, top, sessionRight - sessionLeft, size.Height - top),
             new Rectangle(badgeLeft, top, badgeRight - badgeLeft, size.Height - top),
@@ -701,7 +795,12 @@ public sealed class VisualWeChatClient : IDisposable
                 0,
                 size.Width - sessionRight,
                 Math.Min(size.Height, Math.Max(105, top + 35))),
-            Math.Max(22, (int)(size.Height * 0.065)));
+            Math.Max(22, (int)(size.Height * 0.065)),
+            new Rectangle(
+                sessionRight + 4,
+                inputTop,
+                Math.Max(16, size.Width - sessionRight - 8),
+                Math.Max(16, size.Height - inputTop - 4)));
     }
 
     private static int CenterX(TextBlock block) => (block.BoxPoints[0].X + block.BoxPoints[2].X) / 2;
@@ -717,7 +816,8 @@ public sealed class VisualWeChatClient : IDisposable
         Rectangle SessionArea,
         Rectangle BadgeSearchArea,
         Rectangle HeaderArea,
-        int RowHalfHeight);
+        int RowHalfHeight,
+        Rectangle InputArea);
     private static readonly SemaphoreSlim OcrConsoleLock = new(1, 1);
 
     private enum DwmWindowAttribute
@@ -816,6 +916,13 @@ public sealed class VisualWeChatClient : IDisposable
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(IntPtr windowHandle);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetCursorPos(out NativePoint point);
 
     [DllImport("user32.dll")]
     private static extern int GetSystemMetrics(int index);
