@@ -162,13 +162,14 @@ public sealed class VisualWeChatClient : IDisposable
 
     public async Task<VisualCheckResult> CheckAsync(CancellationToken cancellationToken)
     {
-        using var bitmap = Capture(out _);
+        var capture = CaptureWithLayout();
+        using var bitmap = capture.Bitmap;
         var debugCapturePath = Environment.GetEnvironmentVariable("AICHAT_DEBUG_CAPTURE");
         if (!string.IsNullOrWhiteSpace(debugCapturePath))
         {
             bitmap.Save(Path.GetFullPath(debugCapturePath));
         }
-        var layout = GetLayout(bitmap);
+        var layout = capture.Layout;
         var badges = RedBadgeDetector.Find(bitmap, layout.BadgeSearchArea)
             .Where(badge => RedBadgeDetector.IsPlausibleBadgeCenterX(badge.X, layout.SessionArea.Right))
             .ToArray();
@@ -192,19 +193,21 @@ public sealed class VisualWeChatClient : IDisposable
 
     public WeChatWindowProbe ProbeWindow()
     {
-        using var bitmap = Capture(out var bounds);
-        var layout = GetLayout(bitmap);
+        var capture = CaptureWithLayout();
+        using var bitmap = capture.Bitmap;
         return new WeChatWindowProbe(
-            bounds,
+            capture.Bounds,
             Rectangle.Round(_window.BoundingRectangle),
-            layout.SessionArea.Left,
-            layout.SessionArea.Right);
+            capture.Layout.SessionArea.Left,
+            capture.Layout.SessionArea.Right);
     }
 
     public async Task<IReadOnlyList<UnreadSession>> DetectUnreadSessionsAsync(CancellationToken cancellationToken)
     {
-        using var bitmap = Capture(out var windowBounds);
-        var layout = GetLayout(bitmap);
+        var capture = CaptureWithLayout();
+        using var bitmap = capture.Bitmap;
+        var windowBounds = capture.Bounds;
+        var layout = capture.Layout;
         var badges = RedBadgeDetector.Find(bitmap, layout.BadgeSearchArea)
             .Where(badge => RedBadgeDetector.IsPlausibleBadgeCenterX(badge.X, layout.SessionArea.Right))
             .ToArray();
@@ -359,8 +362,9 @@ public sealed class VisualWeChatClient : IDisposable
 
     private async Task<string> ReadTitleAsync(CancellationToken cancellationToken)
     {
-        using var bitmap = Capture(out _);
-        var layout = GetLayout(bitmap);
+        var capture = CaptureWithLayout();
+        using var bitmap = capture.Bitmap;
+        var layout = capture.Layout;
         using var header = bitmap.Clone(layout.HeaderArea, bitmap.PixelFormat);
         var result = await DetectAsync(header, cancellationToken);
         try
@@ -437,8 +441,9 @@ public sealed class VisualWeChatClient : IDisposable
 
     private async Task<string> ReadInputAreaTextAsync(CancellationToken cancellationToken)
     {
-        using var bitmap = Capture(out _);
-        var layout = GetLayout(bitmap);
+        var capture = CaptureWithLayout();
+        using var bitmap = capture.Bitmap;
+        var layout = capture.Layout;
         using var inputArea = bitmap.Clone(layout.InputArea, bitmap.PixelFormat);
         var result = await DetectAsync(inputArea, cancellationToken);
         try
@@ -499,12 +504,12 @@ public sealed class VisualWeChatClient : IDisposable
     {
         for (var attempt = 0; attempt < 2; attempt++)
         {
-            using var bitmap = Capture(out var bounds);
-            var layout = GetLayout(bitmap);
+            var capture = CaptureWithLayout();
+            using var bitmap = capture.Bitmap;
             _window.Focus();
-            if (GetNativeBounds() == bounds)
+            if (GetNativeBounds() == capture.Bounds)
             {
-                return (bounds, layout);
+                return (capture.Bounds, capture.Layout);
             }
         }
 
@@ -524,6 +529,30 @@ public sealed class VisualWeChatClient : IDisposable
         using var graphics = Graphics.FromImage(bitmap);
         graphics.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size, CopyPixelOperation.SourceCopy);
         return bitmap;
+    }
+
+    private (Bitmap Bitmap, Rectangle Bounds, VisualLayout Layout) CaptureWithLayout()
+    {
+        Exception? lastError = null;
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var bitmap = Capture(out var bounds);
+            try
+            {
+                return (bitmap, bounds, GetLayout(bitmap));
+            }
+            catch (InvalidOperationException ex)
+            {
+                lastError = ex;
+                bitmap.Dispose();
+                if (attempt < 2)
+                {
+                    Thread.Sleep(150);
+                }
+            }
+        }
+
+        throw new InvalidOperationException("连续多次无法识别微信界面布局（窗口可能正在重绘或被遮挡），已停止操作。", lastError);
     }
 
     private Rectangle GetNativeBounds()
