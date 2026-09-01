@@ -24,3 +24,6 @@ models/*.txt
 # OS files
 .DS_Store
 Thumbs.db
+
+# WorkBuddy agent data
+.workbuddy/
