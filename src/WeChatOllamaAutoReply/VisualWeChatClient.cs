@@ -516,6 +516,13 @@ public sealed class VisualWeChatClient : IDisposable
         throw new InvalidOperationException("微信窗口在发送前持续移动或缩放，已取消发送。");
     }
 
+    private static Rectangle GetVirtualScreenBounds() =>
+        new(
+            GetSystemMetrics(SystemMetricVirtualScreenX),
+            GetSystemMetrics(SystemMetricVirtualScreenY),
+            GetSystemMetrics(SystemMetricVirtualScreenWidth),
+            GetSystemMetrics(SystemMetricVirtualScreenHeight));
+
     private Bitmap Capture(out Rectangle bounds)
     {
         _window.Focus();
@@ -525,10 +532,31 @@ public sealed class VisualWeChatClient : IDisposable
             throw new InvalidOperationException("微信窗口过小或已隐藏，请恢复窗口后重试。");
         }
 
+        EnsureWindowFullyVisible(bounds);
+
         var bitmap = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format24bppRgb);
         using var graphics = Graphics.FromImage(bitmap);
         graphics.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size, CopyPixelOperation.SourceCopy);
         return bitmap;
+    }
+
+    private static void EnsureWindowFullyVisible(Rectangle bounds)
+    {
+        var screen = GetVirtualScreenBounds();
+        const int tolerance = 8;
+        var offBottom = bounds.Bottom - screen.Bottom;
+        var offRight = bounds.Right - screen.Right;
+        var offTop = screen.Top - bounds.Top;
+        var offLeft = screen.Left - bounds.Left;
+        if (offBottom <= tolerance && offRight <= tolerance &&
+            offTop <= tolerance && offLeft <= tolerance)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            $"微信窗口有部分在屏幕外（窗口 {bounds}，虚拟桌面 {screen}），" +
+            "屏幕外区域无法截取，点击点也可能落在屏外。请把微信主窗口完整拖回屏幕内后重试。");
     }
 
     private (Bitmap Bitmap, Rectangle Bounds, VisualLayout Layout) CaptureWithLayout()
@@ -763,11 +791,7 @@ public sealed class VisualWeChatClient : IDisposable
 
     private static void MovePointerPhysical(Point physicalPoint)
     {
-        var virtualScreen = new Rectangle(
-            GetSystemMetrics(SystemMetricVirtualScreenX),
-            GetSystemMetrics(SystemMetricVirtualScreenY),
-            GetSystemMetrics(SystemMetricVirtualScreenWidth),
-            GetSystemMetrics(SystemMetricVirtualScreenHeight));
+        var virtualScreen = GetVirtualScreenBounds();
         var normalized = WindowInteractionGeometry.NormalizeVirtualDesktopPoint(
             physicalPoint,
             virtualScreen);
